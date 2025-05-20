@@ -1,5 +1,8 @@
-import React, { useState, useRef } from 'react';
-import { View, Button, StyleSheet } from 'react-native';
+import React, { useState, useRef, useEffect } from 'react';
+import type { FC } from 'react';
+import { View, Button, StyleSheet, SafeAreaView } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import type { WebViewMessageEvent } from 'react-native-webview';
 import { WebView } from 'react-native-webview';
 import { Image } from 'expo-image';
 
@@ -8,29 +11,46 @@ import ParallaxScrollView from '@/components/ParallaxScrollView';
 import { ThemedText } from '@/components/ThemedText';
 import { ThemedView } from '@/components/ThemedView';
 
-export default function HomeScreen() {
-  const [showWebview, setShowWebview] = useState(false);
+const COOKIE_KEY = 'samsung_cookie';
+const LOGIN_URL = 'https://samsunghospital.com/m/smc/member/login.do';
+
+const HomeScreen: FC = () => {
+  const [showWebview, setShowWebview] = useState<boolean>(false);
+  const [storedCookie, setStoredCookie] = useState<string>('');
   const webviewRef = useRef<WebView>(null);
 
-  const onPressLogin = () => setShowWebview(true);
-  const onPressClose = () => setShowWebview(false);
+  // Load saved cookie on mount
+  useEffect(() => {
+    AsyncStorage.getItem(COOKIE_KEY).then((value) => {
+      if (value) {
+        setStoredCookie(value);
+      }
+    });
+  }, []);
 
-  const INJECTED_JS = `
-    if (window.location.pathname === '/dashboard') {
-      window.ReactNativeWebView.postMessage(document.cookie);
-    }
-    true;
-  `;
+  const onPressLogin = (): void => setShowWebview(true);
+  const onPressClose = (): void => setShowWebview(false);
 
-  const onMessage = (event: any) => {
-    const cookieString: string = event.nativeEvent.data;
-    console.log('받은 쿠키:', cookieString);
-    // axios/fetch 스크레이핑 로직 여기에 추가
-    // 세션 유지: WebView를 언마운트하지 않으므로 로그인 상태 지속
+  // After login, save cookie for persistence
+  const onMessage = (event: WebViewMessageEvent): void => {
+    const cookieString = event.nativeEvent.data;
+    // Save to AsyncStorage
+    AsyncStorage.setItem(COOKIE_KEY, cookieString);
+    setStoredCookie(cookieString);
+    console.log('Saved cookie:', cookieString);
   };
 
+  // Inject script to pass login cookie from WebView to RN
+  const INJECTED_JS = `
+    (function() {
+      if (window.location.pathname === '/dashboard') {
+        window.ReactNativeWebView.postMessage(document.cookie);
+      }
+    })(); true;
+  `;
+
   return (
-    <>
+    <SafeAreaView style={styles.container}>
       <ParallaxScrollView
         headerBackgroundColor={{ light: '#A1CEDC', dark: '#1D3D47' }}
         headerImage={
@@ -59,63 +79,48 @@ export default function HomeScreen() {
         </ThemedView>
       </ParallaxScrollView>
 
-      {/* Keep the WebView mounted but hide it */}
+      {/* Persistent WebView overlay to preserve session */}
       <View style={[styles.overlay, !showWebview && styles.hiddenOverlay]}>
-        <View style={styles.webviewHeader}>
-          <Button title="닫기" onPress={onPressClose} />
-        </View>
+        <View style={styles.modalBox}>
+          <View style={styles.webviewHeader}>
+            <Button title="닫기" onPress={onPressClose} />
+          </View>
 
-        {/* Keep WebView mounted and toggle visibility */}
-        <WebView
-          ref={webviewRef}
-          source={{ uri: 'https://samsunghospital.com/m/smc/member/login.do' }}
-          style={[styles.webview, !showWebview && { display: 'none' }]}  // Hide WebView
-          javaScriptEnabled
-          injectedJavaScript={INJECTED_JS}
-          onMessage={onMessage}
-        />
+          <WebView
+            ref={webviewRef}
+            source={{ uri: LOGIN_URL }}
+            style={styles.webview}
+            javaScriptEnabled
+            sharedCookiesEnabled
+            thirdPartyCookiesEnabled
+            injectedJavaScript={INJECTED_JS}
+            injectedJavaScriptBeforeContentLoaded={
+              storedCookie
+                ? `(function(){ document.cookie = "${storedCookie}"; })(); true;`
+                : undefined
+            }
+            onMessage={onMessage}
+          />
+        </View>
       </View>
-    </>
+    </SafeAreaView>
   );
-}
+};
+
+export default HomeScreen;
 
 const styles = StyleSheet.create({
-  titleContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  stepContainer: {
-    gap: 8,
-    marginBottom: 16,
-  },
-  loginContainer: {
-    marginVertical: 24,
-    paddingHorizontal: 16,
-  },
-  hospitalView: {
-    width: '100%',
-    height: '100%',
-  },
+  container: { flex: 1 },
+  titleContainer: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  stepContainer: { gap: 8, marginBottom: 16 },
+  loginContainer: { marginVertical: 24, paddingHorizontal: 16 },
+  hospitalView: { width: '100%', height: '100%' },
   overlay: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    zIndex: 999,
+    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)', justifyContent: 'center', alignItems: 'center',
   },
-  hiddenOverlay: {
-    display: 'none', // Hide the overlay without unmounting it
-  },
-  webviewHeader: {
-    height: 56,
-    justifyContent: 'center',
-    paddingHorizontal: 16,
-    backgroundColor: '#fff',
-  },
-  webview: {
-    flex: 1,
-  },
+  hiddenOverlay: { display: 'none' },
+  modalBox: { width: '90%', height: '80%', backgroundColor: '#fff', borderRadius: 8, overflow: 'hidden' },
+  webviewHeader: { height: 56, justifyContent: 'center', paddingHorizontal: 16, backgroundColor: '#f5f5f5' },
+  webview: { flex: 1 },
 });
